@@ -25,6 +25,8 @@ func main() {
 		panic(err)
 	}
 	handlerGroup = NewHandlerGroup()
+	tgBot.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypePrefix,
+		WrapHandlerGroupFunc(handlerGroup.Start))
 	ctx := context.Background()
 	tgBot.Start(ctx)
 }

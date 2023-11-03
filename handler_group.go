@@ -90,6 +90,10 @@ func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
 func NewHandlerGroup() *HandlerGroup {
 	return &HandlerGroup{}
 }
+func (o *HandlerGroup) Start(update *Update) {
+	update.MustSendReplyMessage("Send me a signed .ipa file and " +
+		"I will generate a link to install it on your iOS devices directly!")
+}
 func (o *HandlerGroup) UploadIPA(update *Update) {
 	if !strings.HasSuffix(update.Update.Message.Document.FileName, ".ipa") {
 		update.MustSendReplyMessage("Please upload a .ipa file")
