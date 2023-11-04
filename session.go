@@ -37,8 +37,10 @@ func (o *Application) BuildPlistContent() string {
 	return plist
 }
 func (o *Application) BuildInstallPageContent() string {
-	return strings.ReplaceAll(installPageTemplate, "__URL__",
+	str := strings.ReplaceAll(installPageTemplate, "__URL__",
 		"itms-services://?action=download-manifest&url="+o.Plist)
+	str = strings.ReplaceAll(str, "__NAME__", o.Name)
+	return str
 }
 
 type Session struct {
