@@ -27,6 +27,8 @@ func main() {
 	handlerGroup = NewHandlerGroup()
 	tgBot.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypePrefix,
 		WrapHandlerGroupFunc(handlerGroup.Start))
+	tgBot.RegisterHandler(bot.HandlerTypeMessageText, "/list", bot.MatchTypePrefix,
+		WrapHandlerGroupFunc(handlerGroup.List))
 	ctx := context.Background()
 	tgBot.Start(ctx)
 }

@@ -6,6 +6,7 @@ require (
 	github.com/go-resty/resty/v2 v2.10.0
 	github.com/go-telegram/bot v0.8.2
 	github.com/google/uuid v1.4.0
+	github.com/life4/genesis v1.10.0
 	github.com/minio/minio-go/v7 v7.0.63
 	gopkg.in/yaml.v3 v3.0.1
 	howett.net/plist v1.0.0

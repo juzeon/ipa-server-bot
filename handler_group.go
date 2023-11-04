@@ -8,6 +8,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/google/uuid"
+	"github.com/life4/genesis/slices"
 	"howett.net/plist"
 	"io"
 	"log/slog"
@@ -92,8 +93,55 @@ func NewHandlerGroup() *HandlerGroup {
 	return &HandlerGroup{}
 }
 func (o *HandlerGroup) Start(update *Update) {
-	update.MustSendReplyMessage("Send me a signed .ipa file and " +
-		"I will generate a link to install it on your iOS devices directly!")
+	payload := update.GetPayload()
+	if strings.HasPrefix(payload, "app_") {
+		o.GetApp(update)
+	} else if strings.HasPrefix(payload, "del_") {
+		o.DelApp(update)
+	} else {
+		update.MustSendReplyMessage("Send me a signed .ipa file and " +
+			"I will generate a link to install it on your iOS devices directly!")
+	}
+}
+func (o *HandlerGroup) DelApp(update *Update) {
+	appUUID := update.MustGetPayload()[4:]
+	session := NewSession(update.Message.Chat.ID)
+	app, err := slices.Find(session.Applications, func(el Application) bool {
+		return el.UUID == appUUID
+	})
+	if err != nil {
+		panic(err)
+	}
+	session.Applications = slices.Delete(session.Applications, app)
+	session.Save()
+	update.MustSendReplyMessage("Application <b>" + app.Name + "</b> has been deleted.")
+}
+func (o *HandlerGroup) GetApp(update *Update) {
+	appUUID := update.MustGetPayload()[4:]
+	session := NewSession(update.Message.Chat.ID)
+	app, err := slices.Find(session.Applications, func(el Application) bool {
+		return el.UUID == appUUID
+	})
+	if err != nil {
+		panic(err)
+	}
+	update.MustSendReplyMessage(BuildAppInfoTemplate(app))
+}
+func (o *HandlerGroup) List(update *Update) {
+	session := NewSession(update.Message.Chat.ID)
+	botUser, err := update.bot.GetMe(update.ctx)
+	if err != nil {
+		panic(err)
+	}
+	_, err = update.bot.SendMessage(update.ctx, &bot.SendMessageParams{
+		ChatID:                update.Message.Chat.ID,
+		Text:                  BuildAppListTemplate(session.Applications, botUser.Username),
+		ParseMode:             "HTML",
+		DisableWebPagePreview: true,
+	})
+	if err != nil {
+		panic(err)
+	}
 }
 func (o *HandlerGroup) UploadIPA(update *Update) {
 	if !strings.HasSuffix(update.Update.Message.Document.FileName, ".ipa") {
@@ -117,7 +165,8 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	if err != nil {
 		panic(err)
 	}
-	application := Application{CreatedAt: time.Now()}
+	uid := uuid.New().String()
+	application := Application{CreatedAt: time.Now(), UUID: uid}
 	for _, file := range r.File {
 		readName := ""
 		if strings.HasSuffix(file.Name, ".app/embedded.mobileprovision") {
@@ -165,7 +214,6 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 			application.Version = plistV["CFBundleShortVersionString"].(string)
 		}
 	}
-	uid := uuid.New().String()
 	ipaURL, err := UploadS3(ipaBytes, uid+"/0.ipa", "application/octet-stream")
 	if err != nil {
 		panic(err)

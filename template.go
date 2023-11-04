@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"github.com/life4/genesis/slices"
+	"time"
+)
 
 func BuildAppInfoTemplate(application Application) string {
 	return `
@@ -13,4 +16,18 @@ func BuildAppInfoTemplate(application Application) string {
 <a href="` + application.IPA + `">Download IPA</a>
 <a href="` + application.InstallPage + `">Install</a>
 `
+}
+func BuildAppListTemplate(apps []Application, botUsername string) string {
+	apps = slices.Reverse(slices.SortBy(apps, func(el Application) int64 {
+		return el.CreatedAt.Unix()
+	}))
+	res := "<b>List of your applications:</b>\n"
+	for _, app := range apps {
+		res += `<a href="https://t.me/` + botUsername + `?start=app_` + app.UUID + `">` + app.Name +
+			`</a>, created at ` + app.CreatedAt.Format(time.DateTime) +
+			`, certificate expires at ` + app.CertExpiredAt.Format(time.DateTime) +
+			` [<a href="https://t.me/` + botUsername + `?start=del_` + app.UUID + `">Delete</a>]` +
+			"\n"
+	}
+	return res
 }

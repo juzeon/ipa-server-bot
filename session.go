@@ -15,6 +15,7 @@ const (
 )
 
 type Application struct {
+	UUID          string    `json:"uuid"`
 	Name          string    `json:"name"`
 	Package       string    `json:"package"`
 	Version       string    `json:"version"`
