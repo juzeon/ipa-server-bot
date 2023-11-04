@@ -41,3 +41,10 @@ go build
 chmod +x ipa-bot-server
 ./ipa-bot-server
 ```
+
+## List of commands
+
+```text
+start - Start the bot
+list - List my applications
+```
