@@ -1,0 +1,14 @@
+# Your server endpoint
+server: "https://example.com"
+
+# Your telegram bot token
+token: "65656565:AAExxxxxxxxxxxxxxx"
+
+# Configure your s3 here
+s3:
+  access_key_id: "641b6f41d64956a"
+  secret_access_key: "b19223949c7072a8d556af60efe97b1f"
+  endpoint: "430a4ce62f894d.r2.cloudflarestorage.com"
+  bucket: "bucketName"
+  region: "auto"
+  url: "https://pub-b6abf7b6430a4ce62f894d9a.r2.dev"
