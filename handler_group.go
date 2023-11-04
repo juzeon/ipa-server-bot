@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,12 +44,26 @@ func (o Update) MustSendReplyMessage(text string) *models.Message {
 	return msg
 }
 func (o Update) SendReplyMessage(text string) (*models.Message, error) {
-	return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
-		ChatID:           o.Message.Chat.ID,
-		Text:             text,
-		ReplyToMessageID: o.Message.ID,
-		ParseMode:        "HTML",
-	})
+	defer func() {
+		if err := recover(); err != nil {
+			slog.Error(fmt.Sprintf("%v", err))
+		}
+	}()
+	if o.Message != nil {
+		return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
+			ChatID:           o.Message.Chat.ID,
+			Text:             text,
+			ReplyToMessageID: o.Message.ID,
+			ParseMode:        "HTML",
+		})
+	} else if o.CallbackQuery != nil {
+		return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
+			ChatID:    o.CallbackQuery.Message.Chat.ID,
+			Text:      text,
+			ParseMode: "HTML",
+		})
+	}
+	panic("no target to reply")
 }
 func (o Update) GetPayload() string {
 	text := ""
@@ -133,11 +148,88 @@ func (o *HandlerGroup) List(update *Update) {
 	if err != nil {
 		panic(err)
 	}
+	str, err := BuildAppListTemplate(session.Applications, botUser.Username, 1)
+	if err != nil {
+		update.MustSendReplyMessage(str)
+		return
+	}
 	_, err = update.bot.SendMessage(update.ctx, &bot.SendMessageParams{
 		ChatID:                update.Message.Chat.ID,
-		Text:                  BuildAppListTemplate(session.Applications, botUser.Username),
+		Text:                  str,
 		ParseMode:             "HTML",
 		DisableWebPagePreview: true,
+		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{
+					Text:         "Previous Page",
+					CallbackData: "list_previous_page",
+				},
+				{
+					Text:         "Next Page",
+					CallbackData: "list_next_page",
+				},
+			},
+		},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+func (o *HandlerGroup) ListSwitchPage(update *Update) {
+	answerText := ""
+	defer func() {
+		update.bot.AnswerCallbackQuery(update.ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: update.CallbackQuery.ID,
+			Text:            answerText,
+		})
+	}()
+	currentPage, err := strconv.Atoi(regexp.MustCompile(`\(Page: (\d+)/(\d+)\)`).
+		FindStringSubmatch(update.CallbackQuery.Message.Text)[1])
+	if err != nil {
+		panic(err)
+	}
+	session := NewSession(update.CallbackQuery.Message.Chat.ID)
+	botUser, err := update.bot.GetMe(update.ctx)
+	if err != nil {
+		panic(err)
+	}
+	template := ""
+	switch update.CallbackQuery.Data[5:] {
+	case "previous_page":
+		t, err := BuildAppListTemplate(session.Applications, botUser.Username, currentPage-1)
+		if err != nil {
+			answerText = err.Error()
+			return
+		}
+		template = t
+	case "next_page":
+		t, err := BuildAppListTemplate(session.Applications, botUser.Username, currentPage+1)
+		if err != nil {
+			answerText = err.Error()
+			return
+		}
+		template = t
+	}
+	_, err = update.bot.EditMessageText(update.ctx, &bot.EditMessageTextParams{
+		ChatID:                update.CallbackQuery.Message.Chat.ID,
+		MessageID:             update.CallbackQuery.Message.ID,
+		Text:                  template,
+		ParseMode:             "HTML",
+		DisableWebPagePreview: true,
+		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{
+					Text:         "Previous Page",
+					CallbackData: "list_previous_page",
+				},
+				{
+					Text:         "Next Page",
+					CallbackData: "list_next_page",
+				},
+			},
+		},
+		},
 	})
 	if err != nil {
 		panic(err)

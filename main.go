@@ -29,6 +29,8 @@ func main() {
 		WrapHandlerGroupFunc(handlerGroup.Start))
 	tgBot.RegisterHandler(bot.HandlerTypeMessageText, "/list", bot.MatchTypePrefix,
 		WrapHandlerGroupFunc(handlerGroup.List))
+	tgBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, "list_", bot.MatchTypePrefix,
+		WrapHandlerGroupFunc(handlerGroup.ListSwitchPage))
 	ctx := context.Background()
 	tgBot.Start(ctx)
 }
