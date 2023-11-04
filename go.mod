@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.4.0
 	github.com/minio/minio-go/v7 v7.0.63
 	gopkg.in/yaml.v3 v3.0.1
+	howett.net/plist v1.0.0
 )
 
 require (

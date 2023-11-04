@@ -8,6 +8,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/google/uuid"
+	"howett.net/plist"
 	"io"
 	"log/slog"
 	"regexp"
@@ -154,19 +155,14 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 				}
 			}
 		case "info.plist":
-			plist := string(v)
-			if g := regexp.MustCompile("<key>CFBundleDisplayName</key>[\\s\\S]*?<string>(.*?)</string>").
-				FindStringSubmatch(plist); len(g) > 0 {
-				application.Name = g[1]
+			plistV := map[string]any{}
+			_, err = plist.Unmarshal(v, &plistV)
+			if err != nil {
+				panic(err)
 			}
-			if g := regexp.MustCompile("<key>CFBundleIdentifier</key>[\\s\\S]*?<string>(.*?)</string>").
-				FindStringSubmatch(plist); len(g) > 0 {
-				application.Package = g[1]
-			}
-			if g := regexp.MustCompile("<key>CFBundleShortVersionString</key>[\\s\\S]*?<string>(.*?)</string>").
-				FindStringSubmatch(plist); len(g) > 0 {
-				application.Version = g[1]
-			}
+			application.Name = plistV["CFBundleDisplayName"].(string)
+			application.Package = plistV["CFBundleIdentifier"].(string)
+			application.Version = plistV["CFBundleShortVersionString"].(string)
 		}
 	}
 	uid := uuid.New().String()
