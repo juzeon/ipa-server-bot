@@ -301,8 +301,15 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 			if err != nil {
 				panic(err)
 			}
-			application.Name = plistV["CFBundleDisplayName"].(string)
+			displayName, ok := plistV["CFBundleDisplayName"].(string)
+			if !ok {
+				displayName, _ = plistV["CFBundleExecutable"].(string)
+			}
 			application.Package = plistV["CFBundleIdentifier"].(string)
+			application.Name = application.Package
+			if displayName != "" {
+				application.Name = displayName
+			}
 			application.Version = plistV["CFBundleShortVersionString"].(string)
 		}
 	}
