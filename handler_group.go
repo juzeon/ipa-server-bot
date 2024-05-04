@@ -249,15 +249,18 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		ChatID:    update.Message.Chat.ID,
 		MessageID: processingMessage.ID,
 	})
+	slog.Info("Begin download ipa", "filePath", ipaFile.FilePath)
 	ipaBytes, err := DownloadTelegramFile(ipaFile.FilePath)
 	if err != nil {
 		panic(err)
 	}
+	slog.Info("Successfully downloaded ipa, unzipping...", "filePath", ipaFile.FilePath)
 	r, err := zip.NewReader(bytes.NewReader(ipaBytes), int64(len(ipaBytes)))
 	if err != nil {
 		panic(err)
 	}
 	uid := uuid.New().String()
+	slog.Info("Successfully unzipped", "uuid-generated", uid)
 	application := Application{CreatedAt: time.Now(), UUID: uid}
 	for _, file := range r.File {
 		readName := ""
@@ -278,6 +281,7 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		if err != nil {
 			panic(err)
 		}
+		slog.Info("Parsing info", "read-name", readName)
 		switch readName {
 		case "mobileprovision":
 			if group := regexp.MustCompile("<plist([\\s\\S]*?)</plist>").FindSubmatch(v); len(group) > 0 {
@@ -313,10 +317,13 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 			application.Version = plistV["CFBundleShortVersionString"].(string)
 		}
 	}
+	slog.Info("Application info", "v", application)
+	slog.Info("Uploading to S3...")
 	ipaURL, err := UploadS3(ipaBytes, uid+"/0.ipa", "application/octet-stream")
 	if err != nil {
 		panic(err)
 	}
+	slog.Info("Successfully uploaded to S3", "ipa-url", ipaURL)
 	application.IPA = ipaURL
 	plistContent := application.BuildPlistContent()
 	plistURL, err := UploadS3([]byte(plistContent), uid+"/manifest.plist", "text/xml")
@@ -330,6 +337,7 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		panic(err)
 	}
 	application.InstallPage = installURL
+	slog.Info("Final application", "v", application)
 	session := NewSession(update.Message.Chat.ID)
 	session.Applications = append(session.Applications, application)
 	session.Save()

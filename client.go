@@ -8,5 +8,5 @@ import (
 var Client *resty.Client
 
 func SetupClient() {
-	Client = resty.New().SetTimeout(60 * time.Second)
+	Client = resty.New().SetTimeout(120 * time.Second)
 }

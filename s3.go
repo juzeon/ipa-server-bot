@@ -23,7 +23,7 @@ func SetupS3() {
 }
 
 func UploadS3(v []byte, filename string, contentType string) (string, error) {
-	ctx, cancel := CreateTimeoutContext(60 * time.Second)
+	ctx, cancel := CreateTimeoutContext(120 * time.Second)
 	defer cancel()
 	info, err := minioClient.PutObject(ctx, config.S3.Bucket, filename, bytes.NewReader(v), int64(len(v)),
 		minio.PutObjectOptions{ContentType: contentType})
