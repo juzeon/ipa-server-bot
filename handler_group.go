@@ -150,7 +150,7 @@ func (o *HandlerGroup) List(update *Update) {
 	}
 	str, err := BuildAppListTemplate(session.Applications, botUser.Username, 1)
 	if err != nil {
-		update.MustSendReplyMessage(str)
+		update.MustSendReplyMessage("error building app list template: " + err.Error())
 		return
 	}
 	_, err = update.bot.SendMessage(update.ctx, &bot.SendMessageParams{
