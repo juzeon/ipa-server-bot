@@ -2,6 +2,8 @@
 
 This is a telegram bot that generates a link to install signed .ipa files directly on iOS devices.
 
+[Demo](https://t.me/IPAServerBot)
+
 ## Deployment
 
 1. Launch a telegram-bot-api instance:
