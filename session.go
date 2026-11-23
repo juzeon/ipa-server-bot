@@ -8,9 +8,20 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+var sessionDir = "sessions"
+
+func sessionPath(chatID int64) string {
+	name := fmt.Sprintf("%d.json", chatID)
+	if name != filepath.Base(name) {
+		panic(errors.New("invalid session"))
+	}
+	return filepath.Join(sessionDir, name)
+}
 
 const (
 	SessionStateDefault = iota
@@ -60,18 +71,16 @@ type Session struct {
 	Applications []Application `json:"applications"`
 }
 
-func NewSession(chatID int64) *Session {
-	if _, err := os.Stat("sessions"); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			err = os.Mkdir("sessions", 0755)
-			if err != nil {
-				panic(err)
-			}
-		} else {
-			panic(err)
-		}
+func ensureSessionDir() {
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		panic(err)
 	}
-	filename := "sessions/" + fmt.Sprintf("%d", chatID) + ".json"
+	tightenOwnerOnly(sessionDir, 0o700)
+}
+
+func NewSession(chatID int64) *Session {
+	ensureSessionDir()
+	filename := sessionPath(chatID)
 	if _, err := os.Stat(filename); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			slog.Info("create session", "chat_id", chatID)
@@ -84,6 +93,7 @@ func NewSession(chatID int64) *Session {
 		}
 	} else {
 		slog.Info("read session", "chat_id", chatID)
+		tightenOwnerOnly(filename, 0o600)
 		v, err := os.ReadFile(filename)
 		if err != nil {
 			panic(err)
@@ -97,13 +107,16 @@ func NewSession(chatID int64) *Session {
 	}
 }
 func (o *Session) Save() {
+	ensureSessionDir()
 	slog.Info("save session", "chat_id", o.ChatID)
 	v, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
 		panic(err)
 	}
-	err = os.WriteFile("sessions/"+fmt.Sprintf("%d", o.ChatID)+".json", v, 0644)
+	path := sessionPath(o.ChatID)
+	err = os.WriteFile(path, v, 0o600)
 	if err != nil {
 		panic(err)
 	}
+	tightenOwnerOnly(path, 0o600)
 }
