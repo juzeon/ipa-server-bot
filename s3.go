@@ -3,9 +3,12 @@ package main
 import (
 	"errors"
 	"io"
+	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -53,4 +56,43 @@ func UploadS3(r io.Reader, size int64, filename string, contentType string) (str
 	}
 	result += filename
 	return result, nil
+}
+
+func applicationObjectKeys(id string) ([]string, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.String() != id {
+		return nil, errors.New("invalid application id")
+	}
+	keys := []string{id + "/0.ipa", id + "/manifest.plist", id + "/install.html"}
+	for _, key := range keys {
+		if !validObjectKey(key) {
+			return nil, errors.New("invalid application id")
+		}
+	}
+	return keys, nil
+}
+
+func DeleteApplicationObjects(id string) error {
+	keys, err := applicationObjectKeys(id)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := CreateTimeoutContext(120 * time.Second)
+	defer cancel()
+	var first error
+	for _, key := range keys {
+		err := minioClient.RemoveObject(ctx, config.S3.Bucket, key, minio.RemoveObjectOptions{})
+		if err == nil {
+			continue
+		}
+		resp := minio.ToErrorResponse(err)
+		if resp.Code == "NoSuchKey" || resp.StatusCode == http.StatusNotFound {
+			continue
+		}
+		slog.Error("delete object failed", "err", redactSecrets(err.Error()))
+		if first == nil {
+			first = err
+		}
+	}
+	return first
 }

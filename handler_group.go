@@ -125,13 +125,24 @@ func (o *HandlerGroup) Start(update *Update) {
 	}
 }
 func (o *HandlerGroup) DelApp(update *Update) {
-	appUUID := update.MustGetPayload()[4:]
+	if update.Message == nil {
+		panic(userErr("Application not found."))
+	}
+	payload := update.MustGetPayload()
+	if !strings.HasPrefix(payload, "del_") || len(payload) <= 4 {
+		panic(userErr("Application not found."))
+	}
+	appUUID := payload[4:]
 	session := NewSession(update.Message.Chat.ID)
 	app, err := slices.Find(session.Applications, func(el Application) bool {
 		return el.UUID == appUUID
 	})
 	if err != nil {
 		panic(userErr("Application not found."))
+	}
+	if err := DeleteApplicationObjects(app.UUID); err != nil {
+		slog.Error("delete application files", "err", redactSecrets(err.Error()))
+		panic(userErr("Could not delete the stored files. Try again later."))
 	}
 	session.Applications = slices.Delete(session.Applications, app)
 	session.Save()
@@ -346,6 +357,9 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	slog.Info("Final application", "name", application.Name)
 	session = NewSession(update.Message.Chat.ID)
 	if len(session.Applications) >= maxApplicationsPerChat {
+		if err := DeleteApplicationObjects(uid); err != nil {
+			slog.Error("cleanup rejected upload", "err", redactSecrets(err.Error()))
+		}
 		panic(userErr("You have too many applications. Delete one before uploading another."))
 	}
 	session.Applications = append(session.Applications, application)
