@@ -18,7 +18,7 @@ func main() {
 	config = NewConfig()
 	SetupClient()
 	SetupS3()
-	tgBot, err := bot.New(config.Token, bot.WithDebug(),
+	tgBot, err := bot.New(config.Token,
 		bot.WithDefaultHandler(WrapHandlerGroupFunc(defaultHandler)),
 		bot.WithServerURL(config.Server))
 	if err != nil {
