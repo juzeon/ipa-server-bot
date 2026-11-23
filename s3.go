@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,11 +16,29 @@ import (
 
 var minioClient *minio.Client
 
+func r2Transport() (*http.Transport, error) {
+	tr, err := minio.DefaultTransport(true)
+	if err != nil {
+		return nil, err
+	}
+	// Go 1.24+ sends an X25519MLKEM768 key share. Cloudflare R2 closes that
+	// handshake with "remote error: tls". Classic curves keep the ClientHello
+	// compatible, and an empty TLSNextProto map keeps the upload on HTTP/1.1.
+	tr.TLSClientConfig.CurvePreferences = []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	return tr, nil
+}
+
 func SetupS3() {
+	transport, err := r2Transport()
+	if err != nil {
+		panic(err)
+	}
 	client, err := minio.New(config.S3.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(config.S3.AccessKeyID, config.S3.SecretAccessKey, ""),
-		Secure: true,
-		Region: config.S3.Region,
+		Creds:     credentials.NewStaticV4(config.S3.AccessKeyID, config.S3.SecretAccessKey, ""),
+		Secure:    true,
+		Region:    config.S3.Region,
+		Transport: transport,
 	})
 	if err != nil {
 		panic(err)

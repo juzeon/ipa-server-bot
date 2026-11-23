@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"regexp"
@@ -11,9 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
 	"github.com/google/uuid"
+	"github.com/gotd/botapi"
 	"github.com/life4/genesis/slices"
 )
 
@@ -22,8 +23,8 @@ var pagePattern = regexp.MustCompile(`\(Page: (\d+)/(\d+)\)`)
 type HandlerGroup struct {
 }
 type Update struct {
-	*models.Update
-	bot *bot.Bot
+	*botapi.Update
+	bot *botapi.Bot
 	ctx context.Context
 }
 
@@ -37,33 +38,26 @@ func (o Update) GetArgumentString() string {
 	}
 	return strings.Join(arr[1:], " ")
 }
-func (o Update) MustSendReplyMessage(text string) *models.Message {
+func (o Update) MustSendReplyMessage(text string) *botapi.Message {
 	msg, err := o.SendReplyMessage(text)
 	if err != nil {
 		panic(err)
 	}
 	return msg
 }
-func (o Update) SendReplyMessage(text string) (*models.Message, error) {
+func (o Update) SendReplyMessage(text string) (*botapi.Message, error) {
 	defer func() {
 		if err := recover(); err != nil {
 			slog.Error("send message failed", "err", redactSecrets(fmt.Sprint(err)))
 		}
 	}()
 	text = redactSecrets(text)
+	opts := []botapi.SendOption{botapi.WithParseMode(botapi.ParseModeHTML)}
 	if o.Message != nil {
-		return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
-			ChatID:           o.Message.Chat.ID,
-			Text:             text,
-			ReplyToMessageID: o.Message.ID,
-			ParseMode:        "HTML",
-		})
-	} else if o.CallbackQuery != nil {
-		return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
-			ChatID:    o.CallbackQuery.Message.Chat.ID,
-			Text:      text,
-			ParseMode: "HTML",
-		})
+		opts = append(opts, botapi.ReplyTo(o.Message.MessageID))
+		return o.bot.SendMessage(o.ctx, botapi.ID(o.Message.Chat.ID), text, opts...)
+	} else if o.CallbackQuery != nil && o.CallbackQuery.Message != nil {
+		return o.bot.SendMessage(o.ctx, botapi.ID(o.CallbackQuery.Message.Chat.ID), text, opts...)
 	}
 	panic("no target to reply")
 }
@@ -90,23 +84,30 @@ func (o Update) MustGetPayload() string {
 	}
 	return payload
 }
+func (o Update) botUsername() string {
+	me := o.bot.Self()
+	if me == nil || me.Username == "" {
+		panic(errors.New("bot identity is unavailable"))
+	}
+	return me.Username
+}
 
-func isPrivateChat(update *models.Update) bool {
+func isPrivateChat(update *botapi.Update) bool {
 	if update == nil {
 		return false
 	}
 	if update.Message != nil {
-		return update.Message.Chat.Type == "private"
+		return update.Message.Chat.Type == botapi.ChatTypePrivate
 	}
 	if update.CallbackQuery != nil && update.CallbackQuery.Message != nil {
-		return update.CallbackQuery.Message.Chat.Type == "private"
+		return update.CallbackQuery.Message.Chat.Type == botapi.ChatTypePrivate
 	}
 	return false
 }
 
-func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
-	return func(ctx context.Context, botIns *bot.Bot, update *models.Update) {
-		u := &Update{Update: update, bot: botIns, ctx: ctx}
+func WrapHandlerGroupFunc(fun func(update *Update)) botapi.Handler {
+	return func(c *botapi.Context) error {
+		u := &Update{Update: c.Update, bot: c.Bot, ctx: c}
 		defer func() {
 			rec := recover()
 			if rec == nil {
@@ -120,13 +121,14 @@ func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
 				slog.Error("cannot send message", "err", redactSecrets(err.Error()))
 			}
 		}()
-		if !isPrivateChat(update) {
-			if update != nil && (update.Message != nil || (update.CallbackQuery != nil && update.CallbackQuery.Message != nil)) {
+		if !isPrivateChat(c.Update) {
+			if c.Update != nil && (c.Update.Message != nil || (c.Update.CallbackQuery != nil && c.Update.CallbackQuery.Message != nil)) {
 				_, _ = u.SendReplyMessage("This bot only works in private chats.")
 			}
-			return
+			return nil
 		}
 		fun(u)
+		return nil
 	}
 }
 func NewHandlerGroup() *HandlerGroup {
@@ -152,6 +154,7 @@ func (o *HandlerGroup) DelApp(update *Update) {
 		panic(userErr("Application not found."))
 	}
 	appUUID := payload[4:]
+	expireChat(update.Message.Chat.ID, time.Now())
 	var deletedName string
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		app, err := slices.Find(session.Applications, func(el Application) bool {
@@ -179,6 +182,7 @@ func (o *HandlerGroup) GetApp(update *Update) {
 		panic(userErr("Application not found."))
 	}
 	appUUID := payload[4:]
+	expireChat(update.Message.Chat.ID, time.Now())
 	var app Application
 	var found bool
 	withSession(update.Message.Chat.ID, func(session *Session) {
@@ -196,42 +200,33 @@ func (o *HandlerGroup) GetApp(update *Update) {
 	}
 	update.MustSendReplyMessage(BuildAppInfoTemplate(app))
 }
+
+func listKeyboard() *botapi.InlineKeyboardMarkup {
+	return botapi.InlineKeyboard([]botapi.InlineKeyboardButton{
+		botapi.InlineButtonData("Previous Page", "list_previous_page"),
+		botapi.InlineButtonData("Next Page", "list_next_page"),
+	})
+}
+
 func (o *HandlerGroup) List(update *Update) {
 	if update.Message == nil {
 		return
 	}
+	expireChat(update.Message.Chat.ID, time.Now())
 	var apps []Application
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		apps = append([]Application(nil), session.Applications...)
 	})
-	botUser, err := update.bot.GetMe(update.ctx)
-	if err != nil {
-		panic(err)
-	}
-	str, err := BuildAppListTemplate(apps, botUser.Username, 1)
+	str, err := BuildAppListTemplate(apps, update.botUsername(), 1)
 	if err != nil {
 		update.MustSendReplyMessage("error building app list template: " + err.Error())
 		return
 	}
-	_, err = update.bot.SendMessage(update.ctx, &bot.SendMessageParams{
-		ChatID:                update.Message.Chat.ID,
-		Text:                  str,
-		ParseMode:             "HTML",
-		DisableWebPagePreview: true,
-		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-			{
-				{
-					Text:         "Previous Page",
-					CallbackData: "list_previous_page",
-				},
-				{
-					Text:         "Next Page",
-					CallbackData: "list_next_page",
-				},
-			},
-		},
-		},
-	})
+	_, err = update.bot.SendMessage(update.ctx, botapi.ID(update.Message.Chat.ID), str,
+		botapi.WithParseMode(botapi.ParseModeHTML),
+		botapi.DisableWebPagePreview(),
+		botapi.WithReplyMarkup(listKeyboard()),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -242,10 +237,7 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 		if update.CallbackQuery == nil {
 			return
 		}
-		if _, err := update.bot.AnswerCallbackQuery(update.ctx, &bot.AnswerCallbackQueryParams{
-			CallbackQueryID: update.CallbackQuery.ID,
-			Text:            answerText,
-		}); err != nil {
+		if err := update.bot.AnswerCallbackQuery(update.ctx, update.CallbackQuery.ID, botapi.WithCallbackText(answerText)); err != nil {
 			slog.Error("answer callback", "err", redactSecrets(err.Error()))
 		}
 	}()
@@ -263,25 +255,22 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	if len(update.CallbackQuery.Data) < 5 {
 		return
 	}
+	expireChat(update.CallbackQuery.Message.Chat.ID, time.Now())
 	var apps []Application
 	withSession(update.CallbackQuery.Message.Chat.ID, func(session *Session) {
 		apps = append([]Application(nil), session.Applications...)
 	})
-	botUser, err := update.bot.GetMe(update.ctx)
-	if err != nil {
-		panic(err)
-	}
 	template := ""
 	switch update.CallbackQuery.Data[5:] {
 	case "previous_page":
-		t, err := BuildAppListTemplate(apps, botUser.Username, currentPage-1)
+		t, err := BuildAppListTemplate(apps, update.botUsername(), currentPage-1)
 		if err != nil {
 			answerText = err.Error()
 			return
 		}
 		template = t
 	case "next_page":
-		t, err := BuildAppListTemplate(apps, botUser.Username, currentPage+1)
+		t, err := BuildAppListTemplate(apps, update.botUsername(), currentPage+1)
 		if err != nil {
 			answerText = err.Error()
 			return
@@ -290,26 +279,11 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	default:
 		return
 	}
-	_, err = update.bot.EditMessageText(update.ctx, &bot.EditMessageTextParams{
-		ChatID:                update.CallbackQuery.Message.Chat.ID,
-		MessageID:             update.CallbackQuery.Message.ID,
-		Text:                  template,
-		ParseMode:             "HTML",
-		DisableWebPagePreview: true,
-		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-			{
-				{
-					Text:         "Previous Page",
-					CallbackData: "list_previous_page",
-				},
-				{
-					Text:         "Next Page",
-					CallbackData: "list_next_page",
-				},
-			},
-		},
-		},
-	})
+	_, err = update.bot.EditMessageText(update.ctx, botapi.ID(update.CallbackQuery.Message.Chat.ID), update.CallbackQuery.Message.MessageID, template,
+		botapi.WithParseMode(botapi.ParseModeHTML),
+		botapi.DisableWebPagePreview(),
+		botapi.WithReplyMarkup(listKeyboard()),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -323,6 +297,7 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		update.MustSendReplyMessage("The IPA file is too large.")
 		return
 	}
+	expireChat(update.Message.Chat.ID, time.Now())
 	tooMany := false
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		tooMany = len(session.Applications) >= maxApplicationsPerChat
@@ -336,35 +311,23 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		return
 	}
 	defer releaseIPASlot()
-	ipaFile, err := update.bot.GetFile(update.ctx, &bot.GetFileParams{FileID: update.Message.Document.FileID})
-	if err != nil {
-		panic(err)
-	}
 	processingMessage := update.MustSendReplyMessage("Processing your .ipa file...")
-	defer update.bot.DeleteMessage(update.ctx, &bot.DeleteMessageParams{
-		ChatID:    update.Message.Chat.ID,
-		MessageID: processingMessage.ID,
+	defer update.bot.DeleteMessage(update.ctx, botapi.ID(update.Message.Chat.ID), processingMessage.MessageID)
+	slog.Info("Begin download ipa")
+	tmpPath, infoSize, err := writeLimitedTemp(maxIPABytes, func(w io.Writer) (int64, error) {
+		return update.bot.DownloadFile(update.ctx, update.Message.Document.FileID, w)
 	})
-	slog.Info("Begin download ipa", "filePath", redactSecrets(ipaFile.FilePath))
-	tmp, err := os.CreateTemp("", "ipa-*")
 	if err != nil {
+		if errors.Is(err, errTooLarge) {
+			panic(userErr("The IPA file is too large."))
+		}
 		panic(err)
 	}
-	defer os.Remove(tmp.Name())
-	if err := DownloadTelegramFile(ipaFile.FilePath, tmp); err != nil {
-		panic(err)
-	}
-	if err := tmp.Close(); err != nil {
-		panic(err)
-	}
-	info, err := os.Stat(tmp.Name())
-	if err != nil {
-		panic(err)
-	}
-	if info.Size() == 0 {
+	defer os.Remove(tmpPath)
+	if infoSize == 0 {
 		panic(userErr("The file is not a valid IPA."))
 	}
-	parsed, err := parseIPA(tmp.Name())
+	parsed, err := parseIPA(tmpPath)
 	if err != nil {
 		panic(err)
 	}
@@ -375,11 +338,11 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	application.UUID = uid
 	slog.Info("Application info", "name", application.Name, "package", application.Package)
 	slog.Info("Uploading to S3...")
-	ipaReader, err := os.Open(tmp.Name())
+	ipaReader, err := os.Open(tmpPath)
 	if err != nil {
 		panic(err)
 	}
-	ipaURL, err := UploadS3(ipaReader, info.Size(), uid+"/0.ipa", "application/octet-stream")
+	ipaURL, err := UploadS3(ipaReader, infoSize, uid+"/0.ipa", "application/octet-stream")
 	closeErr := ipaReader.Close()
 	if err != nil {
 		panic(err)

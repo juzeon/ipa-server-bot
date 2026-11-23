@@ -1,5 +1,7 @@
 ﻿.idea
 sessions
 config.yml
+bot.bbolt
+*.bbolt
 Info.plist
 test

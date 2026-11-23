@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
-	"net/http"
-	"net/url"
-	"path"
+	"os"
 	"strings"
 	"time"
 )
@@ -18,6 +15,9 @@ func redactSecrets(s string) string {
 	}
 	if config.Token != "" {
 		s = strings.ReplaceAll(s, config.Token, "[redacted]")
+	}
+	if config.APIHash != "" {
+		s = strings.ReplaceAll(s, config.APIHash, "[redacted]")
 	}
 	if len(config.S3.SecretAccessKey) >= 8 {
 		s = strings.ReplaceAll(s, config.S3.SecretAccessKey, "[redacted]")
@@ -49,92 +49,63 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func sanitizeTelegramFilePath(filePath string) (string, error) {
-	if config == nil || config.Token == "" || filePath == "" {
-		return "", errors.New("invalid file path")
+type byteLimitWriter struct {
+	w     io.Writer
+	n     int64
+	limit int64
+}
+
+func (l *byteLimitWriter) Write(p []byte) (int, error) {
+	if l.limit < 0 || l.n >= l.limit || int64(len(p)) > l.limit-l.n {
+		return 0, errTooLarge
 	}
-	prefix := "/var/lib/telegram-bot-api/" + config.Token + "/"
-	if strings.HasPrefix(filePath, "/") && !strings.HasPrefix(filePath, prefix) {
-		return "", errors.New("invalid file path")
+	n, err := l.w.Write(p)
+	l.n += int64(n)
+	return n, err
+}
+
+// writeLimitedTemp streams into a new temporary file and stops once limit bytes
+// would be exceeded. On failure the temporary file is removed.
+func writeLimitedTemp(limit int64, write func(io.Writer) (int64, error)) (path string, size int64, err error) {
+	f, err := os.CreateTemp("", "ipa-*")
+	if err != nil {
+		return "", 0, err
 	}
-	filePath = strings.TrimPrefix(filePath, prefix)
-	filePath = strings.TrimPrefix(filePath, "/")
-	if filePath == "" || strings.Contains(filePath, "\\") || strings.ContainsAny(filePath, "\r\n\t?#") || strings.Contains(filePath, "://") {
-		return "", errors.New("invalid file path")
-	}
-	for _, part := range strings.Split(filePath, "/") {
-		if part == "" || part == "." || part == ".." || strings.Contains(part, ":") {
-			return "", errors.New("invalid file path")
+	path = f.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = f.Close()
 		}
-	}
-	cleaned := path.Clean("/" + filePath)
-	rel := strings.TrimPrefix(cleaned, "/")
-	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "..") {
-		return "", errors.New("invalid file path")
-	}
-	return rel, nil
-}
-
-func telegramFileURL(filePath string) (string, error) {
-	rel, err := sanitizeTelegramFilePath(filePath)
-	if err != nil {
-		return "", err
-	}
-	if config == nil {
-		return "", errors.New("invalid server url")
-	}
-	base, err := url.Parse(config.Server)
-	if err != nil || base.Hostname() == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil {
-		return "", errors.New("invalid server url")
-	}
-	segments := strings.Split(rel, "/")
-	escaped := make([]string, len(segments))
-	for i, seg := range segments {
-		escaped[i] = url.PathEscape(seg)
-	}
-	basePath := strings.TrimSuffix(base.EscapedPath(), "/")
-	return base.Scheme + "://" + base.Host + basePath + "/file/bot" + config.Token + "/" + strings.Join(escaped, "/"), nil
-}
-
-func sameOriginRedirect(req *http.Request, via []*http.Request) error {
-	if req == nil || req.URL == nil || len(via) == 0 || len(via) >= 3 || via[0] == nil || via[0].URL == nil {
-		return errors.New("redirect is not allowed")
-	}
-	orig := via[0].URL
-	if req.URL.Scheme != orig.Scheme || !strings.EqualFold(req.URL.Hostname(), orig.Hostname()) || req.URL.Port() != orig.Port() {
-		return errors.New("redirect to another origin is not allowed")
-	}
-	return nil
-}
-
-func DownloadTelegramFile(filePath string, dst io.Writer) error {
-	rawURL, err := telegramFileURL(filePath)
-	if err != nil {
-		slog.Error("reject telegram file path")
-		return errors.New("telegram file download failed")
-	}
-	slog.Info("download telegram file")
-	resp, err := Client.R().SetDoNotParseResponse(true).Get(rawURL)
-	if err != nil || resp == nil || resp.RawBody() == nil {
 		if err != nil {
-			slog.Error("telegram download failed", "err", redactSecrets(err.Error()))
+			_ = os.Remove(path)
+			path = ""
+			size = 0
 		}
-		return errors.New("telegram file download failed")
-	}
-	defer resp.RawBody().Close()
-	if resp.StatusCode() != http.StatusOK {
-		slog.Error("telegram download failed", "status", resp.StatusCode())
-		return errors.New("telegram file download failed")
-	}
-	if err := copyLimited(dst, resp.RawBody(), maxIPABytes); err != nil {
-		if errors.Is(err, errTooLarge) {
-			return userErr("The IPA file is too large.")
+	}()
+	n, werr := write(&byteLimitWriter{w: f, limit: limit})
+	if werr != nil {
+		if errors.Is(werr, errTooLarge) {
+			err = errTooLarge
+			return
 		}
-		slog.Error("telegram download failed", "err", redactSecrets(err.Error()))
-		return errors.New("telegram file download failed")
+		err = werr
+		return
 	}
-	return nil
+	if n > limit {
+		err = errTooLarge
+		return
+	}
+	if cerr := f.Close(); cerr != nil {
+		closed = true
+		err = cerr
+		return
+	}
+	closed = true
+	size = n
+	return path, size, nil
 }
+
 func CreateTimeoutContext(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
 }
