@@ -91,6 +91,19 @@ func (o Update) MustGetPayload() string {
 	return payload
 }
 
+func isPrivateChat(update *models.Update) bool {
+	if update == nil {
+		return false
+	}
+	if update.Message != nil {
+		return update.Message.Chat.Type == "private"
+	}
+	if update.CallbackQuery != nil && update.CallbackQuery.Message != nil {
+		return update.CallbackQuery.Message.Chat.Type == "private"
+	}
+	return false
+}
+
 func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
 	return func(ctx context.Context, botIns *bot.Bot, update *models.Update) {
 		u := &Update{Update: update, bot: botIns, ctx: ctx}
@@ -107,6 +120,12 @@ func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
 				slog.Error("cannot send message", "err", redactSecrets(err.Error()))
 			}
 		}()
+		if !isPrivateChat(update) {
+			if update != nil && (update.Message != nil || (update.CallbackQuery != nil && update.CallbackQuery.Message != nil)) {
+				_, _ = u.SendReplyMessage("This bot only works in private chats.")
+			}
+			return
+		}
 		fun(u)
 	}
 }
