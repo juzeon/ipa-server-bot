@@ -18,7 +18,7 @@ func main() {
 	config = NewConfig()
 	SetupClient()
 	SetupS3()
-	tgBot, err := bot.New(config.Token, bot.WithDebug(),
+	tgBot, err := bot.New(config.Token,
 		bot.WithDefaultHandler(WrapHandlerGroupFunc(defaultHandler)),
 		bot.WithServerURL(config.Server))
 	if err != nil {
@@ -38,8 +38,11 @@ func defaultHandler(update *Update) {
 	if update.Message == nil {
 		return
 	}
-	session := NewSession(update.Message.Chat.ID)
-	if session.State != SessionStateDefault {
+	blocked := false
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		blocked = session.State != SessionStateDefault
+	})
+	if blocked {
 		return
 	}
 	if update.Message.Document == nil {

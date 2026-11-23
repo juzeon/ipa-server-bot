@@ -1,11 +1,16 @@
 package main
 
 import (
-	"bytes"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var minioClient *minio.Client
@@ -22,10 +27,25 @@ func SetupS3() {
 	minioClient = client
 }
 
-func UploadS3(v []byte, filename string, contentType string) (string, error) {
+func validObjectKey(key string) bool {
+	if key == "" || len(key) > 1024 || strings.Contains(key, "\\") || strings.HasPrefix(key, "/") {
+		return false
+	}
+	for _, part := range strings.Split(key, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func UploadS3(r io.Reader, size int64, filename string, contentType string) (string, error) {
+	if !validObjectKey(filename) || strings.ContainsAny(contentType, "\r\n") || size < 0 {
+		return "", errors.New("invalid upload")
+	}
 	ctx, cancel := CreateTimeoutContext(120 * time.Second)
 	defer cancel()
-	info, err := minioClient.PutObject(ctx, config.S3.Bucket, filename, bytes.NewReader(v), int64(len(v)),
+	_, err := minioClient.PutObject(ctx, config.S3.Bucket, filename, r, size,
 		minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		return "", err
@@ -34,6 +54,45 @@ func UploadS3(v []byte, filename string, contentType string) (string, error) {
 	if !strings.HasSuffix(result, "/") {
 		result += "/"
 	}
-	result += info.Key
+	result += filename
 	return result, nil
+}
+
+func applicationObjectKeys(id string) ([]string, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.String() != id {
+		return nil, errors.New("invalid application id")
+	}
+	keys := []string{id + "/0.ipa", id + "/manifest.plist", id + "/install.html"}
+	for _, key := range keys {
+		if !validObjectKey(key) {
+			return nil, errors.New("invalid application id")
+		}
+	}
+	return keys, nil
+}
+
+func DeleteApplicationObjects(id string) error {
+	keys, err := applicationObjectKeys(id)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := CreateTimeoutContext(120 * time.Second)
+	defer cancel()
+	var first error
+	for _, key := range keys {
+		err := minioClient.RemoveObject(ctx, config.S3.Bucket, key, minio.RemoveObjectOptions{})
+		if err == nil {
+			continue
+		}
+		resp := minio.ToErrorResponse(err)
+		if resp.Code == "NoSuchKey" || resp.StatusCode == http.StatusNotFound {
+			continue
+		}
+		slog.Error("delete object failed", "err", redactSecrets(err.Error()))
+		if first == nil {
+			first = err
+		}
+	}
+	return first
 }
