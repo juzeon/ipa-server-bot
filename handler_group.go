@@ -154,6 +154,7 @@ func (o *HandlerGroup) DelApp(update *Update) {
 		panic(userErr("Application not found."))
 	}
 	appUUID := payload[4:]
+	expireChat(update.Message.Chat.ID, time.Now())
 	var deletedName string
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		app, err := slices.Find(session.Applications, func(el Application) bool {
@@ -181,6 +182,7 @@ func (o *HandlerGroup) GetApp(update *Update) {
 		panic(userErr("Application not found."))
 	}
 	appUUID := payload[4:]
+	expireChat(update.Message.Chat.ID, time.Now())
 	var app Application
 	var found bool
 	withSession(update.Message.Chat.ID, func(session *Session) {
@@ -210,6 +212,7 @@ func (o *HandlerGroup) List(update *Update) {
 	if update.Message == nil {
 		return
 	}
+	expireChat(update.Message.Chat.ID, time.Now())
 	var apps []Application
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		apps = append([]Application(nil), session.Applications...)
@@ -252,6 +255,7 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	if len(update.CallbackQuery.Data) < 5 {
 		return
 	}
+	expireChat(update.CallbackQuery.Message.Chat.ID, time.Now())
 	var apps []Application
 	withSession(update.CallbackQuery.Message.Chat.ID, func(session *Session) {
 		apps = append([]Application(nil), session.Applications...)
@@ -293,6 +297,7 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		update.MustSendReplyMessage("The IPA file is too large.")
 		return
 	}
+	expireChat(update.Message.Chat.ID, time.Now())
 	tooMany := false
 	withSession(update.Message.Chat.ID, func(session *Session) {
 		tooMany = len(session.Applications) >= maxApplicationsPerChat

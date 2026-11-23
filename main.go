@@ -47,6 +47,9 @@ func main() {
 	tightenOwnerOnly(config.SessionFile, 0o600)
 
 	SetupS3()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	runExpiryLoop(ctx)
 	tgBot, err := botapi.New(config.Token, botapi.Options{
 		AppID:   config.APIID,
 		AppHash: config.APIHash,
@@ -62,8 +65,6 @@ func main() {
 	tgBot.OnCallbackQuery(WrapHandlerGroupFunc(handlerGroup.ListSwitchPage), botapi.CallbackPrefix("list_"))
 	tgBot.OnMessage(WrapHandlerGroupFunc(defaultHandler))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if err := tgBot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("bot stopped", "err", redactSecrets(err.Error()))
 		os.Exit(1)
