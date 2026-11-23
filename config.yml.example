@@ -1,8 +1,12 @@
-# Your server endpoint
-server: "https://example.com"
-
-# Your telegram bot token
+# Bot token from @BotFather
 token: "YOUR_BOT_TOKEN"
+
+# Application identity from https://my.telegram.org
+api_id: 123456
+api_hash: "YOUR_API_HASH"
+
+# MTProto session. Relative paths are relative to the process working directory.
+session_file: "./bot.bbolt"
 
 # Configure your s3 here
 s3:

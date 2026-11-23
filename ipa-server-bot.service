@@ -1,0 +1,18 @@
+[Unit]
+Description=IPA Server Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ipa-server-bot
+Group=ipa-server-bot
+WorkingDirectory=/var/lib/ipa-server-bot
+ExecStart=/usr/local/bin/ipa-server-bot -c /etc/ipa-server-bot/config.yml
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
