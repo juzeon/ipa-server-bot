@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+var pagePattern = regexp.MustCompile(`\(Page: (\d+)/(\d+)\)`)
+
 type HandlerGroup struct {
 }
 type Update struct {
@@ -46,9 +48,10 @@ func (o Update) MustSendReplyMessage(text string) *models.Message {
 func (o Update) SendReplyMessage(text string) (*models.Message, error) {
 	defer func() {
 		if err := recover(); err != nil {
-			slog.Error(fmt.Sprintf("%v", err))
+			slog.Error("send message failed", "err", redactSecrets(fmt.Sprint(err)))
 		}
 	}()
+	text = redactSecrets(text)
 	if o.Message != nil {
 		return o.bot.SendMessage(o.ctx, &bot.SendMessageParams{
 			ChatID:           o.Message.Chat.ID,
@@ -84,7 +87,7 @@ func (o Update) GetPayload() string {
 func (o Update) MustGetPayload() string {
 	payload := o.GetPayload()
 	if payload == "" {
-		panic("cannot get payload")
+		panic(userErr("That command needs more detail."))
 	}
 	return payload
 }
@@ -93,12 +96,16 @@ func WrapHandlerGroupFunc(fun func(update *Update)) bot.HandlerFunc {
 	return func(ctx context.Context, botIns *bot.Bot, update *models.Update) {
 		u := &Update{Update: update, bot: botIns, ctx: ctx}
 		defer func() {
-			if err := recover(); err != nil {
-				slog.Error("recover from panic", err)
-				_, err = u.SendReplyMessage(fmt.Sprintf("%v", err))
-				if err != nil {
-					slog.Error("cannot send error msg: ", err)
-				}
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			reply, logDetail := handlerFailureMessage(rec)
+			if logDetail != "" {
+				slog.Error("handler failed", "err", logDetail)
+			}
+			if _, err := u.SendReplyMessage(reply); err != nil {
+				slog.Error("cannot send message", "err", redactSecrets(err.Error()))
 			}
 		}()
 		fun(u)
@@ -125,7 +132,7 @@ func (o *HandlerGroup) DelApp(update *Update) {
 		return el.UUID == appUUID
 	})
 	if err != nil {
-		panic(err)
+		panic(userErr("Application not found."))
 	}
 	session.Applications = slices.Delete(session.Applications, app)
 	session.Save()
@@ -138,7 +145,7 @@ func (o *HandlerGroup) GetApp(update *Update) {
 		return el.UUID == appUUID
 	})
 	if err != nil {
-		panic(err)
+		panic(userErr("Application not found."))
 	}
 	update.MustSendReplyMessage(BuildAppInfoTemplate(app))
 }
@@ -179,15 +186,26 @@ func (o *HandlerGroup) List(update *Update) {
 func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	answerText := ""
 	defer func() {
-		update.bot.AnswerCallbackQuery(update.ctx, &bot.AnswerCallbackQueryParams{
+		if update.CallbackQuery == nil {
+			return
+		}
+		if _, err := update.bot.AnswerCallbackQuery(update.ctx, &bot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
 			Text:            answerText,
-		})
+		}); err != nil {
+			slog.Error("answer callback", "err", redactSecrets(err.Error()))
+		}
 	}()
-	currentPage, err := strconv.Atoi(regexp.MustCompile(`\(Page: (\d+)/(\d+)\)`).
-		FindStringSubmatch(update.CallbackQuery.Message.Text)[1])
+	if update.CallbackQuery == nil || update.CallbackQuery.Message == nil {
+		return
+	}
+	match := pagePattern.FindStringSubmatch(update.CallbackQuery.Message.Text)
+	if len(match) < 2 {
+		panic(userErr("This page is no longer available."))
+	}
+	currentPage, err := strconv.Atoi(match[1])
 	if err != nil {
-		panic(err)
+		panic(userErr("This page is no longer available."))
 	}
 	session := NewSession(update.CallbackQuery.Message.Chat.ID)
 	botUser, err := update.bot.GetMe(update.ctx)
