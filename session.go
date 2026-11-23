@@ -10,8 +10,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var sessionLocks sync.Map
+
+func sessionLock(chatID int64) *sync.Mutex {
+	v, _ := sessionLocks.LoadOrStore(chatID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+func withSession(chatID int64, fn func(*Session)) {
+	mu := sessionLock(chatID)
+	mu.Lock()
+	defer mu.Unlock()
+	fn(NewSession(chatID))
+}
 
 var sessionDir = "sessions"
 
@@ -103,6 +118,7 @@ func NewSession(chatID int64) *Session {
 		if err != nil {
 			panic(err)
 		}
+		session.ChatID = chatID
 		return &session
 	}
 }
@@ -114,8 +130,12 @@ func (o *Session) Save() {
 		panic(err)
 	}
 	path := sessionPath(o.ChatID)
-	err = os.WriteFile(path, v, 0o600)
-	if err != nil {
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, v, 0o600); err != nil {
+		panic(err)
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		panic(err)
 	}
 	tightenOwnerOnly(path, 0o600)

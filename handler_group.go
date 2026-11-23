@@ -133,39 +133,63 @@ func (o *HandlerGroup) DelApp(update *Update) {
 		panic(userErr("Application not found."))
 	}
 	appUUID := payload[4:]
-	session := NewSession(update.Message.Chat.ID)
-	app, err := slices.Find(session.Applications, func(el Application) bool {
-		return el.UUID == appUUID
+	var deletedName string
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		app, err := slices.Find(session.Applications, func(el Application) bool {
+			return el.UUID == appUUID
+		})
+		if err != nil {
+			panic(userErr("Application not found."))
+		}
+		if err := DeleteApplicationObjects(app.UUID); err != nil {
+			slog.Error("delete application files", "err", redactSecrets(err.Error()))
+			panic(userErr("Could not delete the stored files. Try again later."))
+		}
+		session.Applications = slices.Delete(session.Applications, app)
+		session.Save()
+		deletedName = app.Name
 	})
-	if err != nil {
-		panic(userErr("Application not found."))
-	}
-	if err := DeleteApplicationObjects(app.UUID); err != nil {
-		slog.Error("delete application files", "err", redactSecrets(err.Error()))
-		panic(userErr("Could not delete the stored files. Try again later."))
-	}
-	session.Applications = slices.Delete(session.Applications, app)
-	session.Save()
-	update.MustSendReplyMessage("Application <b>" + htmlText(app.Name) + "</b> has been deleted.")
+	update.MustSendReplyMessage("Application <b>" + htmlText(deletedName) + "</b> has been deleted.")
 }
 func (o *HandlerGroup) GetApp(update *Update) {
-	appUUID := update.MustGetPayload()[4:]
-	session := NewSession(update.Message.Chat.ID)
-	app, err := slices.Find(session.Applications, func(el Application) bool {
-		return el.UUID == appUUID
+	if update.Message == nil {
+		panic(userErr("Application not found."))
+	}
+	payload := update.MustGetPayload()
+	if !strings.HasPrefix(payload, "app_") || len(payload) <= 4 {
+		panic(userErr("Application not found."))
+	}
+	appUUID := payload[4:]
+	var app Application
+	var found bool
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		foundApp, err := slices.Find(session.Applications, func(el Application) bool {
+			return el.UUID == appUUID
+		})
+		if err != nil {
+			return
+		}
+		app = foundApp
+		found = true
 	})
-	if err != nil {
+	if !found {
 		panic(userErr("Application not found."))
 	}
 	update.MustSendReplyMessage(BuildAppInfoTemplate(app))
 }
 func (o *HandlerGroup) List(update *Update) {
-	session := NewSession(update.Message.Chat.ID)
+	if update.Message == nil {
+		return
+	}
+	var apps []Application
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		apps = append([]Application(nil), session.Applications...)
+	})
 	botUser, err := update.bot.GetMe(update.ctx)
 	if err != nil {
 		panic(err)
 	}
-	str, err := BuildAppListTemplate(session.Applications, botUser.Username, 1)
+	str, err := BuildAppListTemplate(apps, botUser.Username, 1)
 	if err != nil {
 		update.MustSendReplyMessage("error building app list template: " + err.Error())
 		return
@@ -217,7 +241,13 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	if err != nil {
 		panic(userErr("This page is no longer available."))
 	}
-	session := NewSession(update.CallbackQuery.Message.Chat.ID)
+	if len(update.CallbackQuery.Data) < 5 {
+		return
+	}
+	var apps []Application
+	withSession(update.CallbackQuery.Message.Chat.ID, func(session *Session) {
+		apps = append([]Application(nil), session.Applications...)
+	})
 	botUser, err := update.bot.GetMe(update.ctx)
 	if err != nil {
 		panic(err)
@@ -225,19 +255,21 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	template := ""
 	switch update.CallbackQuery.Data[5:] {
 	case "previous_page":
-		t, err := BuildAppListTemplate(session.Applications, botUser.Username, currentPage-1)
+		t, err := BuildAppListTemplate(apps, botUser.Username, currentPage-1)
 		if err != nil {
 			answerText = err.Error()
 			return
 		}
 		template = t
 	case "next_page":
-		t, err := BuildAppListTemplate(session.Applications, botUser.Username, currentPage+1)
+		t, err := BuildAppListTemplate(apps, botUser.Username, currentPage+1)
 		if err != nil {
 			answerText = err.Error()
 			return
 		}
 		template = t
+	default:
+		return
 	}
 	_, err = update.bot.EditMessageText(update.ctx, &bot.EditMessageTextParams{
 		ChatID:                update.CallbackQuery.Message.Chat.ID,
@@ -272,8 +304,11 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		update.MustSendReplyMessage("The IPA file is too large.")
 		return
 	}
-	session := NewSession(update.Message.Chat.ID)
-	if len(session.Applications) >= maxApplicationsPerChat {
+	tooMany := false
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		tooMany = len(session.Applications) >= maxApplicationsPerChat
+	})
+	if tooMany {
 		update.MustSendReplyMessage("You have too many applications. Delete one before uploading another.")
 		return
 	}
@@ -355,14 +390,20 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	}
 	application.InstallPage = installURL
 	slog.Info("Final application", "name", application.Name)
-	session = NewSession(update.Message.Chat.ID)
-	if len(session.Applications) >= maxApplicationsPerChat {
+	saved := false
+	withSession(update.Message.Chat.ID, func(session *Session) {
+		if len(session.Applications) >= maxApplicationsPerChat {
+			return
+		}
+		session.Applications = append(session.Applications, application)
+		session.Save()
+		saved = true
+	})
+	if !saved {
 		if err := DeleteApplicationObjects(uid); err != nil {
 			slog.Error("cleanup rejected upload", "err", redactSecrets(err.Error()))
 		}
 		panic(userErr("You have too many applications. Delete one before uploading another."))
 	}
-	session.Applications = append(session.Applications, application)
-	session.Save()
 	update.MustSendReplyMessage(BuildAppInfoTemplate(application))
 }
