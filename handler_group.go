@@ -136,7 +136,7 @@ func (o *HandlerGroup) DelApp(update *Update) {
 	}
 	session.Applications = slices.Delete(session.Applications, app)
 	session.Save()
-	update.MustSendReplyMessage("Application <b>" + app.Name + "</b> has been deleted.")
+	update.MustSendReplyMessage("Application <b>" + htmlText(app.Name) + "</b> has been deleted.")
 }
 func (o *HandlerGroup) GetApp(update *Update) {
 	appUUID := update.MustGetPayload()[4:]
@@ -343,14 +343,21 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	}
 	slog.Info("Successfully uploaded to S3", "ipa-url", ipaURL)
 	application.IPA = ipaURL
-	plistContent := application.BuildPlistContent()
+	plistContent, err := application.BuildPlistContent()
+	if err != nil {
+		panic(userErr("Could not build the install manifest."))
+	}
 	plistURL, err := UploadS3([]byte(plistContent), uid+"/manifest.plist", "text/xml")
 	if err != nil {
 		panic(err)
 	}
 	application.Plist = plistURL
-	installURL, err := UploadS3([]byte(application.BuildInstallPageContent()),
-		uid+"/install.html", "text/html")
+	installContent, err := application.BuildInstallPageContent()
+	if err != nil {
+		panic(userErr("Could not build the install page."))
+	}
+	installURL, err := UploadS3([]byte(installContent),
+		uid+"/install.html", "text/html; charset=utf-8")
 	if err != nil {
 		panic(err)
 	}

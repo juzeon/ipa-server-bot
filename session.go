@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -28,19 +30,28 @@ type Application struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-func (o *Application) BuildPlistContent() string {
-	plist := plistTemplate
-	plist = strings.ReplaceAll(plist, "__IPA__", o.IPA)
-	plist = strings.ReplaceAll(plist, "__NAME__", o.Name)
-	plist = strings.ReplaceAll(plist, "__PACKAGE__", o.Package)
-	plist = strings.ReplaceAll(plist, "__VERSION__", o.Version)
-	return plist
+func (o *Application) BuildPlistContent() (string, error) {
+	ipa, err := sanitizeHTTPURL(o.IPA)
+	if err != nil {
+		return "", err
+	}
+	return strings.NewReplacer(
+		"__IPA__", html.EscapeString(ipa),
+		"__NAME__", htmlText(o.Name),
+		"__PACKAGE__", htmlText(o.Package),
+		"__VERSION__", htmlText(o.Version),
+	).Replace(plistTemplate), nil
 }
-func (o *Application) BuildInstallPageContent() string {
-	str := strings.ReplaceAll(installPageTemplate, "__URL__",
-		"itms-services://?action=download-manifest&url="+o.Plist)
-	str = strings.ReplaceAll(str, "__NAME__", o.Name)
-	return str
+func (o *Application) BuildInstallPageContent() (string, error) {
+	manifest, err := sanitizeHTTPURL(o.Plist)
+	if err != nil {
+		return "", err
+	}
+	installURL := "itms-services://?action=download-manifest&url=" + url.QueryEscape(manifest)
+	return strings.NewReplacer(
+		"__URL__", html.EscapeString(installURL),
+		"__NAME__", htmlText(o.Name),
+	).Replace(installPageTemplate), nil
 }
 
 type Session struct {
