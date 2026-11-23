@@ -9,7 +9,7 @@ This is a telegram bot that generates a link to install signed .ipa files direct
 1. Launch a telegram-bot-api instance:
 
 ```bash
-docker run -d -p 8081:8081 --name=telegram-bot-api --restart=always -v ./data:/var/lib/telegram-bot-api -e TELEGRAM_API_ID=601761 -e TELEGRAM_API_HASH=20a3432aab43f24bb4460fceac5ba38d -e TELEGRAM_LOCAL=1 aiogram/telegram-bot-api:latest
+docker run -d -p 8081:8081 --name=telegram-bot-api --restart=always -v ./data:/var/lib/telegram-bot-api -e TELEGRAM_API_ID=YOUR_API_ID -e TELEGRAM_API_HASH=YOUR_API_HASH -e TELEGRAM_LOCAL=1 aiogram/telegram-bot-api:latest
 ```
 
 You need to use a self-hosted telegram-bot-api service because it can handle files that are larger than 20MB.
