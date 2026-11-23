@@ -1,21 +1,20 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
-	"github.com/google/uuid"
-	"github.com/life4/genesis/slices"
-	"howett.net/plist"
-	"io"
 	"log/slog"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+	"github.com/google/uuid"
+	"github.com/life4/genesis/slices"
 )
 
 var pagePattern = regexp.MustCompile(`\(Page: (\d+)/(\d+)\)`)
@@ -254,11 +253,25 @@ func (o *HandlerGroup) ListSwitchPage(update *Update) {
 	}
 }
 func (o *HandlerGroup) UploadIPA(update *Update) {
-	if !strings.HasSuffix(update.Update.Message.Document.FileName, ".ipa") {
+	if update.Message == nil || update.Message.Document == nil || !isIPAFileName(update.Message.Document.FileName) {
 		update.MustSendReplyMessage("Please upload a .ipa file")
 		return
 	}
-	ipaFile, err := update.bot.GetFile(update.ctx, &bot.GetFileParams{FileID: update.Update.Message.Document.FileID})
+	if update.Message.Document.FileSize > maxIPABytes {
+		update.MustSendReplyMessage("The IPA file is too large.")
+		return
+	}
+	session := NewSession(update.Message.Chat.ID)
+	if len(session.Applications) >= maxApplicationsPerChat {
+		update.MustSendReplyMessage("You have too many applications. Delete one before uploading another.")
+		return
+	}
+	if !acquireIPASlot() {
+		update.MustSendReplyMessage("The bot is busy processing other files. Try again in a moment.")
+		return
+	}
+	defer releaseIPASlot()
+	ipaFile, err := update.bot.GetFile(update.ctx, &bot.GetFileParams{FileID: update.Message.Document.FileID})
 	if err != nil {
 		panic(err)
 	}
@@ -267,79 +280,47 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 		ChatID:    update.Message.Chat.ID,
 		MessageID: processingMessage.ID,
 	})
-	slog.Info("Begin download ipa", "filePath", ipaFile.FilePath)
-	ipaBytes, err := DownloadTelegramFile(ipaFile.FilePath)
+	slog.Info("Begin download ipa", "filePath", redactSecrets(ipaFile.FilePath))
+	tmp, err := os.CreateTemp("", "ipa-*")
 	if err != nil {
 		panic(err)
 	}
-	slog.Info("Successfully downloaded ipa, unzipping...", "filePath", ipaFile.FilePath)
-	r, err := zip.NewReader(bytes.NewReader(ipaBytes), int64(len(ipaBytes)))
+	defer os.Remove(tmp.Name())
+	if err := DownloadTelegramFile(ipaFile.FilePath, tmp); err != nil {
+		panic(err)
+	}
+	if err := tmp.Close(); err != nil {
+		panic(err)
+	}
+	info, err := os.Stat(tmp.Name())
+	if err != nil {
+		panic(err)
+	}
+	if info.Size() == 0 {
+		panic(userErr("The file is not a valid IPA."))
+	}
+	parsed, err := parseIPA(tmp.Name())
 	if err != nil {
 		panic(err)
 	}
 	uid := uuid.New().String()
-	slog.Info("Successfully unzipped", "uuid-generated", uid)
-	application := Application{CreatedAt: time.Now(), UUID: uid}
-	for _, file := range r.File {
-		readName := ""
-		if strings.HasSuffix(file.Name, ".app/embedded.mobileprovision") {
-			readName = "mobileprovision"
-		}
-		if strings.HasSuffix(file.Name, ".app/Info.plist") {
-			readName = "info.plist"
-		}
-		if readName == "" {
-			continue
-		}
-		reader, err := file.Open()
-		if err != nil {
-			panic(err)
-		}
-		v, err := io.ReadAll(reader)
-		if err != nil {
-			panic(err)
-		}
-		slog.Info("Parsing info", "read-name", readName)
-		switch readName {
-		case "mobileprovision":
-			if group := regexp.MustCompile("<plist([\\s\\S]*?)</plist>").FindSubmatch(v); len(group) > 0 {
-				mobileprovision := string(group[0])
-				if g := regexp.MustCompile("<key>CreationDate</key>[\\s\\S]*?<date>(.*?)</date>").
-					FindStringSubmatch(mobileprovision); len(g) > 0 {
-					application.CertCreatedAt, _ = time.Parse(time.RFC3339, g[1])
-				}
-				if g := regexp.MustCompile("<key>ExpirationDate</key>[\\s\\S]*?<date>(.*?)</date>").
-					FindStringSubmatch(mobileprovision); len(g) > 0 {
-					application.CertExpiredAt, _ = time.Parse(time.RFC3339, g[1])
-				}
-				if g := regexp.MustCompile("<key>TeamName</key>[\\s\\S]*?<string>(.*?)</string>").
-					FindStringSubmatch(mobileprovision); len(g) > 0 {
-					application.CertOrg = g[1]
-				}
-			}
-		case "info.plist":
-			plistV := map[string]any{}
-			_, err = plist.Unmarshal(v, &plistV)
-			if err != nil {
-				panic(err)
-			}
-			displayName, ok := plistV["CFBundleDisplayName"].(string)
-			if !ok {
-				displayName, _ = plistV["CFBundleExecutable"].(string)
-			}
-			application.Package = plistV["CFBundleIdentifier"].(string)
-			application.Name = application.Package
-			if displayName != "" {
-				application.Name = displayName
-			}
-			application.Version = plistV["CFBundleShortVersionString"].(string)
-		}
-	}
-	slog.Info("Application info", "v", application)
+	slog.Info("parsed ipa", "uuid-generated", uid)
+	application := parsed
+	application.CreatedAt = time.Now()
+	application.UUID = uid
+	slog.Info("Application info", "name", application.Name, "package", application.Package)
 	slog.Info("Uploading to S3...")
-	ipaURL, err := UploadS3(ipaBytes, uid+"/0.ipa", "application/octet-stream")
+	ipaReader, err := os.Open(tmp.Name())
 	if err != nil {
 		panic(err)
+	}
+	ipaURL, err := UploadS3(ipaReader, info.Size(), uid+"/0.ipa", "application/octet-stream")
+	closeErr := ipaReader.Close()
+	if err != nil {
+		panic(err)
+	}
+	if closeErr != nil {
+		panic(closeErr)
 	}
 	slog.Info("Successfully uploaded to S3", "ipa-url", ipaURL)
 	application.IPA = ipaURL
@@ -347,7 +328,7 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	if err != nil {
 		panic(userErr("Could not build the install manifest."))
 	}
-	plistURL, err := UploadS3([]byte(plistContent), uid+"/manifest.plist", "text/xml")
+	plistURL, err := UploadS3(bytes.NewReader([]byte(plistContent)), int64(len(plistContent)), uid+"/manifest.plist", "text/xml")
 	if err != nil {
 		panic(err)
 	}
@@ -356,14 +337,17 @@ func (o *HandlerGroup) UploadIPA(update *Update) {
 	if err != nil {
 		panic(userErr("Could not build the install page."))
 	}
-	installURL, err := UploadS3([]byte(installContent),
+	installURL, err := UploadS3(bytes.NewReader([]byte(installContent)), int64(len(installContent)),
 		uid+"/install.html", "text/html; charset=utf-8")
 	if err != nil {
 		panic(err)
 	}
 	application.InstallPage = installURL
-	slog.Info("Final application", "v", application)
-	session := NewSession(update.Message.Chat.ID)
+	slog.Info("Final application", "name", application.Name)
+	session = NewSession(update.Message.Chat.ID)
+	if len(session.Applications) >= maxApplicationsPerChat {
+		panic(userErr("You have too many applications. Delete one before uploading another."))
+	}
 	session.Applications = append(session.Applications, application)
 	session.Save()
 	update.MustSendReplyMessage(BuildAppInfoTemplate(application))

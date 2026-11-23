@@ -1,11 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"errors"
+	"io"
 	"strings"
 	"time"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var minioClient *minio.Client
@@ -22,10 +24,25 @@ func SetupS3() {
 	minioClient = client
 }
 
-func UploadS3(v []byte, filename string, contentType string) (string, error) {
+func validObjectKey(key string) bool {
+	if key == "" || len(key) > 1024 || strings.Contains(key, "\\") || strings.HasPrefix(key, "/") {
+		return false
+	}
+	for _, part := range strings.Split(key, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func UploadS3(r io.Reader, size int64, filename string, contentType string) (string, error) {
+	if !validObjectKey(filename) || strings.ContainsAny(contentType, "\r\n") || size < 0 {
+		return "", errors.New("invalid upload")
+	}
 	ctx, cancel := CreateTimeoutContext(120 * time.Second)
 	defer cancel()
-	info, err := minioClient.PutObject(ctx, config.S3.Bucket, filename, bytes.NewReader(v), int64(len(v)),
+	_, err := minioClient.PutObject(ctx, config.S3.Bucket, filename, r, size,
 		minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		return "", err
@@ -34,6 +51,6 @@ func UploadS3(v []byte, filename string, contentType string) (string, error) {
 	if !strings.HasSuffix(result, "/") {
 		result += "/"
 	}
-	result += info.Key
+	result += filename
 	return result, nil
 }
